@@ -1,0 +1,4 @@
+build/
+build-*/
+render_out/
+.DS_Store
