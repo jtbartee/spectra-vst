@@ -150,6 +150,8 @@ void SpectraAudioProcessor::setCurrentProgram (int index)
 
     currentProgram = index;
     spectra::writeParams (apvts, all[size_t (index)]);
+    undoSnapshot.clearQuick();
+    lastRoll = {};
     // The timer picks up the table change and rebuilds off the audio thread.
 }
 
@@ -204,6 +206,107 @@ void SpectraAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     }
     if (pos < numSamples)
         engine.render (left + pos, right + pos, numSamples - pos);
+}
+
+// ---------------------------------------------------------------------------
+// The dice
+
+bool SpectraAudioProcessor::isExcludedFromRolls (const juce::String& paramID)
+{
+    // Master volume, voice count and velocity sensitivity are performance settings rather than
+    // "the sound". Rolling them would change how the instrument plays, which is always a
+    // surprise. Same three ids as RANDOMIZE_EXCLUDE in js/randomize.js.
+    return paramID == ids::master || paramID == ids::poly || paramID == ids::velSens;
+}
+
+void SpectraAudioProcessor::takeUndoSnapshot()
+{
+    undoSnapshot.clearQuick();
+    for (auto* p : getParameters())
+        undoSnapshot.add (p->getValue());
+}
+
+void SpectraAudioProcessor::randomizePatch()
+{
+    takeUndoSnapshot();
+
+    Character character {};
+    const Params rolled = spectra::randomizePatch (readParams (apvts), rollRng, &character);
+    writeParams (apvts, rolled);
+
+    lastRoll = juce::String ("Rolled: ") + characterName (character);
+    // The 30 Hz timer notices the new table/spectral settings and rebuilds off the audio thread.
+}
+
+void SpectraAudioProcessor::mutatePatch (float amount)
+{
+    takeUndoSnapshot();
+
+    // Ports mutatePatch() from js/randomize.js: walk the whole parameter table and nudge each
+    // control a little, working in normalised space so every curve keeps its own feel -- an
+    // exponential cutoff moves by the same *perceived* amount as a linear mix knob.
+    //
+    // Unlike the roll this runs over the APVTS rather than the Params struct, which is the same
+    // call jp8-vst makes: the ranges are already declared once in createParameterLayout(), and
+    // duplicating 82 of them in the DSP layer would only create a second place for them to
+    // drift out of step.
+    for (auto* param : getParameters())
+    {
+        auto* withID = dynamic_cast<juce::AudioProcessorParameterWithID*> (param);
+        if (withID == nullptr || isExcludedFromRolls (withID->paramID)) continue;
+
+        float next = param->getValue();
+
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (param))
+        {
+            // The wavetable choice moves more rarely than the other selectors: swapping it is a
+            // new patch rather than a nudge, so it gets the web version's lower probability.
+            const bool isTable = withID->paramID == ids::osc (0, ids::oscTable)
+                              || withID->paramID == ids::osc (1, ids::oscTable);
+            const float p = amount * (isTable ? 0.25f : 0.4f);
+            if (rollRng.next01() >= p) continue;
+
+            const int n = choice->choices.size();
+            if (n < 2) continue;
+            const int pick = juce::jmin (n - 1, int (rollRng.next01() * float (n)));
+            next = choice->convertTo0to1 (float (pick));
+        }
+        else if (dynamic_cast<juce::AudioParameterBool*> (param) != nullptr)
+        {
+            if (rollRng.next01() >= amount * 0.3f) continue;
+            next = next > 0.5f ? 0.0f : 1.0f;
+        }
+        else
+        {
+            const float nudge = (rollRng.next01() * 2.0f - 1.0f) * amount;
+            next = juce::jlimit (0.0f, 1.0f, next + nudge);
+        }
+
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (next);
+        param->endChangeGesture();
+    }
+
+    lastRoll = "Mutated";
+}
+
+void SpectraAudioProcessor::undoRandomize()
+{
+    if (undoSnapshot.isEmpty()) return;
+
+    const auto& params = getParameters();
+    if (undoSnapshot.size() == params.size())
+    {
+        for (int i = 0; i < params.size(); ++i)
+        {
+            auto* p = params.getUnchecked (i);
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (undoSnapshot.getUnchecked (i));
+            p->endChangeGesture();
+        }
+    }
+    undoSnapshot.clearQuick();
+    lastRoll = {};
 }
 
 juce::AudioProcessorEditor* SpectraAudioProcessor::createEditor()

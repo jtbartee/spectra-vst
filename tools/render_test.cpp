@@ -9,6 +9,7 @@
 //   ./spectra_render --quick    -- checks only, no WAV output
 
 #include "../source/dsp/SpectraEngine.h"
+#include "../source/dsp/Randomize.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -140,6 +141,97 @@ static Params tuningPatch (int table = 6 /* Sine */)
     p.fx = FxParams {};
     p.fx.reverbMix = 0.0f;
     return p;
+}
+
+/** Returns a description of the first out-of-range field, or "" if the patch is clean. This is
+ *  the C++ counterpart of running a rolled patch through sanitizeParams() in the browser: the
+ *  roll must never produce a value the parameter layout would have to clamp. */
+static std::string outOfRange (const Params& p)
+{
+    std::string bad;
+    auto chk = [&bad] (bool ok, const char* what, double v)
+    {
+        if (! ok && bad.empty()) bad = std::string (what) + "=" + std::to_string (v);
+    };
+    auto inRange = [] (double v, double lo, double hi) { return std::isfinite (v) && v >= lo && v <= hi; };
+
+    const int numTables = int (factoryTableNames().size());
+    for (int o = 0; o < 2; ++o)
+    {
+        const OscParams& q = (o == 0) ? p.osc1 : p.osc2;
+        const char* n = (o == 0) ? "osc1" : "osc2";
+        chk (inRange (q.pos, 0, 1), (std::string (n) + ".pos").c_str(), q.pos);
+        chk (inRange (q.warp, -1, 1), (std::string (n) + ".warp").c_str(), q.warp);
+        chk (inRange (q.spec, 0, 1), (std::string (n) + ".spec").c_str(), q.spec);
+        chk (q.unison >= 1 && q.unison <= kMaxUnison, (std::string (n) + ".unison").c_str(), q.unison);
+        chk (inRange (q.detune, 0, 100), (std::string (n) + ".detune").c_str(), q.detune);
+        chk (inRange (q.spread, 0, 1), (std::string (n) + ".spread").c_str(), q.spread);
+        chk (inRange (q.blend, 0, 1), (std::string (n) + ".blend").c_str(), q.blend);
+        chk (q.semi >= -24 && q.semi <= 24, (std::string (n) + ".semi").c_str(), q.semi);
+        chk (inRange (q.fine, -100, 100), (std::string (n) + ".fine").c_str(), q.fine);
+        chk (inRange (q.rand, 0, 1), (std::string (n) + ".rand").c_str(), q.rand);
+        chk (inRange (q.level, 0, 1), (std::string (n) + ".level").c_str(), q.level);
+        chk (inRange (q.pan, -1, 1), (std::string (n) + ".pan").c_str(), q.pan);
+        chk (q.table >= 0 && q.table < numTables, (std::string (n) + ".table").c_str(), q.table);
+        chk (int (q.warpMode) >= 0 && int (q.warpMode) < kNumWarpModes,
+             (std::string (n) + ".warpMode").c_str(), int (q.warpMode));
+        chk (int (q.specMode) >= 0 && int (q.specMode) < kNumSpecModes,
+             (std::string (n) + ".specMode").c_str(), int (q.specMode));
+    }
+
+    chk (inRange (p.subLevel, 0, 1), "subLevel", p.subLevel);
+    chk (p.subOct >= 0 && p.subOct <= 1, "subOct", p.subOct);
+    chk (p.subShape >= 0 && p.subShape <= 2, "subShape", p.subShape);
+    chk (inRange (p.noiseLevel, 0, 1), "noiseLevel", p.noiseLevel);
+
+    chk (int (p.filter.type) >= 0 && int (p.filter.type) < kNumFilterTypes, "filter.type", int (p.filter.type));
+    chk (inRange (p.filter.cut, 20, 20000), "filter.cut", p.filter.cut);
+    chk (inRange (p.filter.res, 0, 1), "filter.res", p.filter.res);
+    chk (inRange (p.filter.drive, 0, 1), "filter.drive", p.filter.drive);
+    chk (inRange (p.filter.env, -1, 1), "filter.env", p.filter.env);
+    chk (inRange (p.filter.key, 0, 1), "filter.key", p.filter.key);
+
+    for (int e = 0; e < 2; ++e)
+    {
+        const EnvParams& q = (e == 0) ? p.env1 : p.env2;
+        const std::string n = (e == 0) ? "env1" : "env2";
+        chk (inRange (q.a, 0.001, 20), (n + ".a").c_str(), q.a);
+        chk (inRange (q.d, 0.001, 20), (n + ".d").c_str(), q.d);
+        chk (inRange (q.s, 0, 1), (n + ".s").c_str(), q.s);
+        chk (inRange (q.r, 0.001, 20), (n + ".r").c_str(), q.r);
+    }
+
+    for (int l = 0; l < 2; ++l)
+    {
+        const LfoParams& q = (l == 0) ? p.lfo1 : p.lfo2;
+        const std::string n = (l == 0) ? "lfo1" : "lfo2";
+        chk (inRange (q.rate, 0.01, 30), (n + ".rate").c_str(), q.rate);
+        chk (int (q.shape) >= 0 && int (q.shape) < kNumLfoShapes, (n + ".shape").c_str(), int (q.shape));
+    }
+
+    for (size_t m = 0; m < p.mods.size(); ++m)
+    {
+        const std::string n = "mod" + std::to_string (m + 1);
+        chk (p.mods[m].src >= 0 && p.mods[m].src < kNumModSources, (n + ".src").c_str(), p.mods[m].src);
+        chk (p.mods[m].dst >= 0 && p.mods[m].dst < kNumModDests, (n + ".dst").c_str(), p.mods[m].dst);
+        chk (inRange (p.mods[m].amt, -1, 1), (n + ".amt").c_str(), p.mods[m].amt);
+    }
+
+    chk (inRange (p.glide, 0, 2), "glide", p.glide);
+    chk (p.poly >= 1 && p.poly <= kMaxVoices, "poly", p.poly);
+    chk (inRange (p.velSens, 0, 1), "velSens", p.velSens);
+    chk (inRange (p.master, 0, 1), "master", p.master);
+
+    chk (inRange (p.fx.dist, 0, 1), "fx.dist", p.fx.dist);
+    chk (inRange (p.fx.chorusRate, 0.05, 8), "fx.chorusRate", p.fx.chorusRate);
+    chk (inRange (p.fx.chorusDepth, 0, 1), "fx.chorusDepth", p.fx.chorusDepth);
+    chk (inRange (p.fx.chorusMix, 0, 1), "fx.chorusMix", p.fx.chorusMix);
+    chk (inRange (p.fx.delayTime, 0.02, 1.5), "fx.delayTime", p.fx.delayTime);
+    chk (inRange (p.fx.delayFeedback, 0, 0.9), "fx.delayFeedback", p.fx.delayFeedback);
+    chk (inRange (p.fx.delayMix, 0, 1), "fx.delayMix", p.fx.delayMix);
+    chk (inRange (p.fx.reverbSize, 0, 1), "fx.reverbSize", p.fx.reverbSize);
+    chk (inRange (p.fx.reverbMix, 0, 1), "fx.reverbMix", p.fx.reverbMix);
+    return bad;
 }
 
 int main (int argc, char** argv)
@@ -542,6 +634,111 @@ int main (int argc, char** argv)
         out.measure();
         check (r, out.finite, "table swap: finite while a note is sounding");
         check (r, out.peak > 0.005f, "table swap: still audible", "peak=" + std::to_string (out.peak));
+    }
+
+    // --- the dice ---
+    // Every roll gets rendered and measured. This is the point of keeping randomizePatch() in
+    // the JUCE-free DSP layer: a roll that produces a legal-looking patch which happens to be
+    // silent, or which blows up the filter, is caught here rather than in a host.
+    {
+        constexpr int kRolls = 40;
+        std::string rangeErr, excludeErr, modErr;
+        int silent = 0, nonFinite = 0, loudest = 0;
+        float loudestPeak = 0.0f;
+        bool charactersSeen[kNumCharacters] = { false, false, false, false, false };
+
+        Params base;                    // Init, i.e. what the plugin starts on
+        base.master = 0.8f;
+        base.poly = 8;
+        base.velSens = 0.5f;
+
+        for (int i = 0; i < kRolls; ++i)
+        {
+            Rng rng { uint32_t (i * 2654435761u + 12345u) };
+            Character character {};
+            const Params p = randomizePatch (base, rng, &character);
+            charactersSeen[size_t (character)] = true;
+
+            if (rangeErr.empty()) rangeErr = outOfRange (p);
+
+            // Performance settings must ride through every roll untouched.
+            if (excludeErr.empty()
+                && (p.master != base.master || p.poly != base.poly || p.velSens != base.velSens))
+                excludeErr = "roll " + std::to_string (i) + " moved a performance param";
+
+            // One to three live routings, no destination wired twice.
+            int live = 0;
+            bool usedDst[kNumModDests] = {};
+            for (const ModSlot& m : p.mods)
+            {
+                if (m.src == 0 || m.dst == 0)
+                {
+                    if (m.amt != 0.0f && modErr.empty()) modErr = "off slot has a non-zero amount";
+                    continue;
+                }
+                if (usedDst[m.dst] && modErr.empty()) modErr = "destination wired twice";
+                usedDst[m.dst] = true;
+                ++live;
+            }
+            if ((live < 1 || live > 3) && modErr.empty())
+                modErr = std::to_string (live) + " live routings";
+
+            SpectraEngine engine;
+            engine.prepare (kSr, kBlock);
+            engine.setParams (p);
+            applyTables (engine, p);
+
+            // 2 seconds of hold covers the longest attack a roll can produce (~0.63 s).
+            const Rendered out = playNote (engine, 48, 0.9f, 2.0, 1.0);
+            if (! out.finite) ++nonFinite;
+            else if (out.peak < 0.01f || out.rms < 1e-4) ++silent;
+
+            if (out.finite && out.peak > loudestPeak) { loudestPeak = out.peak; loudest = i; }
+        }
+
+        check (r, rangeErr.empty(), "randomize: rolls stay in range", rangeErr);
+        check (r, excludeErr.empty(), "randomize: performance params excluded", excludeErr);
+        check (r, modErr.empty(), "randomize: mod matrix routings are sane", modErr);
+        check (r, nonFinite == 0, "randomize: every roll renders finite output",
+               std::to_string (nonFinite) + " of " + std::to_string (kRolls) + " blew up");
+        check (r, silent == 0, "randomize: every roll is audible",
+               std::to_string (silent) + " of " + std::to_string (kRolls) + " were silent");
+
+        bool allCharacters = true;
+        for (bool seen : charactersSeen) allCharacters = allCharacters && seen;
+        check (r, allCharacters, "randomize: all five characters reachable");
+
+        // The same seed must produce the same patch, or a roll you liked can never be recovered.
+        Rng a { 777u }, b { 777u };
+        Character ca {}, cb {};
+        const Params pa = randomizePatch (base, a, &ca);
+        const Params pb = randomizePatch (base, b, &cb);
+        check (r, ca == cb && pa.filter.cut == pb.filter.cut && pa.osc1.pos == pb.osc1.pos
+                  && pa.osc1.table == pb.osc1.table && pa.env1.a == pb.env1.a,
+               "randomize: a seeded roll is deterministic");
+
+        Rng c { 778u };
+        Character cc {};
+        const Params pc = randomizePatch (base, c, &cc);
+        check (r, pc.osc1.pos != pa.osc1.pos || pc.filter.cut != pa.filter.cut,
+               "randomize: different seeds give different patches");
+
+        if (! quick)
+        {
+            // Write the loudest roll out so the dice can actually be listened to.
+            Rng rng { uint32_t (loudest * 2654435761u + 12345u) };
+            Character character {};
+            const Params p = randomizePatch (base, rng, &character);
+            SpectraEngine engine;
+            engine.prepare (kSr, kBlock);
+            engine.setParams (p);
+            applyTables (engine, p);
+            const Rendered out = playNote (engine, 48, 0.9f, 2.0, 1.5);
+            writeWav (std::string ("render_out/random-") + characterName (character) + ".wav",
+                      out.l, out.r, kSr);
+            std::printf ("  note  loudest roll was #%d (%s), peak %.3f\n",
+                         loudest, characterName (character), double (loudestPeak));
+        }
     }
 
     std::printf ("---------------------------------------------------\n");

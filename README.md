@@ -40,6 +40,32 @@ tools/           offline verification harnesses
   matrix, the polyphony limit, glide, and a table hot-swap while a note is sounding.
 - **`spectra_hosttest`** loads the built VST3 the way a DAW does and checks the wrapper: buses,
   MIDI, reported latency, the preset list, and state round-tripping.
+- **`spectra_uicheck`** instantiates the processor in-process, drives the dice through the
+  processor API, and writes offscreen PNGs of the editor at its default and minimum sizes.
+  Snapshotting through the VST3 host wrapper comes back blank — there the editor is an embedded
+  native view — so this links the plugin's shared code directly.
+
+All three are wired as ctest targets: `ctest --test-dir build --output-on-failure`.
+
+## The dice
+
+RANDOM / MUTATE / UNDO in the header, ported from the web build's `js/randomize.js`.
+
+The roll lives in `source/dsp/Randomize.cpp` rather than in the JUCE wrapper, which is what lets
+`spectra_render` roll 40 patches, render every one, and assert they are finite and audible — a
+roll that produces a legal-looking patch which happens to be silent is caught offline instead of
+in a host. It picks a character (Bass, Pluck, Pad, Lead, Texture) and narrows the ranges that
+decide whether a patch is playable, leaving the wavetable, warp/spectral modes, morph position
+and mod matrix free.
+
+**Mutate is the exception**: it runs over the APVTS rather than the `Params` struct. The ranges
+are already declared once in `createParameterLayout()`, and duplicating 82 of them in the DSP
+layer would only create a second place for them to drift out of step. This matches `jp8-vst`.
+
+Master volume, voice count and velocity sensitivity are excluded from every roll — the C++ side
+of the web build's `RANDOMIZE_EXCLUDE`. **UNDO is a deviation in the other direction**: it is one
+level deep and the web version has it too, but the browser build got it as part of this same
+change rather than the plugin adding something the web lacks.
 
 ## Porting notes
 

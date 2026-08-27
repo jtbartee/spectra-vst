@@ -2,6 +2,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Parameters.h"
 #include "../dsp/SpectraEngine.h"
+#include "../dsp/Randomize.h"
 
 class SpectraAudioProcessor : public juce::AudioProcessor,
                               private juce::Timer
@@ -41,6 +42,20 @@ public:
      *  editor's wavetable display. Safe to call from the message thread at any time. */
     void getDisplayFrame (int osc, float pos, std::vector<float>& out) const;
 
+    // ----- the dice ---------------------------------------------------------
+    // The web build's RANDOM / MUTATE pair, plus an undo the browser does not have.
+
+    /** Roll a whole new patch. */
+    void randomizePatch();
+    /** Nudge the current patch instead of replacing it. */
+    void mutatePatch (float amount = 0.15f);
+
+    bool canUndoRandomize() const { return ! undoSnapshot.isEmpty(); }
+    void undoRandomize();
+
+    /** What the last roll produced, for the editor's status line ("Rolled: Texture"). */
+    juce::String getLastRollDescription() const { return lastRoll; }
+
 private:
     void timerCallback() override;
     void handleMidiMessage (const juce::MidiMessage& m);
@@ -72,6 +87,18 @@ private:
 
     juce::CriticalSection displayLock;
     std::vector<std::vector<float>> displayFrames[2];
+
+    /** Every parameter's normalised value as it stood immediately before the last roll. Empty
+     *  means there is nothing to undo. One level deep, matching the web build's single-step
+     *  undo. */
+    juce::Array<float> undoSnapshot;
+    void takeUndoSnapshot();
+    /** True for the performance settings that no roll may touch -- the C++ side of
+     *  RANDOMIZE_EXCLUDE in js/randomize.js. */
+    static bool isExcludedFromRolls (const juce::String& paramID);
+
+    spectra::Rng rollRng { uint32_t (juce::Random::getSystemRandom().nextInt()) };
+    juce::String lastRoll;
 
     int currentProgram = 0;
     float modWheel = 0.0f;

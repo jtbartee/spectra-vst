@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SPECTRASYNTH VERSION 1.1.0 LANGUAGES C CXX)
+project(SPECTRASYNTH VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,7 @@ add_library(spectra_dsp STATIC
     source/dsp/Effects.cpp
     source/dsp/SpectraVoice.cpp
     source/dsp/SpectraEngine.cpp
+    source/dsp/Randomize.cpp
 )
 target_include_directories(spectra_dsp PUBLIC source/dsp)
 target_compile_features(spectra_dsp PUBLIC cxx_std_17)
@@ -105,8 +106,31 @@ target_link_libraries(spectra_hosttest PRIVATE
 )
 add_dependencies(spectra_hosttest SpectraSynth_VST3)
 
+# ---------------------------------------------------------------------------
+# Editor checks: exercises the dice through the processor API and writes offscreen
+# screenshots. Links the plugin's shared code directly -- through the VST3 host
+# wrapper the editor is an embedded native view and snapshots come back blank.
+# ---------------------------------------------------------------------------
+juce_add_console_app(spectra_uicheck PRODUCT_NAME "spectra_uicheck")
+target_sources(spectra_uicheck PRIVATE tools/ui_test.cpp)
+target_compile_definitions(spectra_uicheck PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+# The console-app target and the plugin shared code disagree about
+# JUCE_STANDALONE_APPLICATION; harmless here, but it should not spam the build.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(spectra_uicheck PRIVATE -Wno-macro-redefined)
+endif()
+target_link_libraries(spectra_uicheck PRIVATE
+    SpectraSynth
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+)
+
 enable_testing()
 add_test(NAME dsp_checks COMMAND spectra_render --quick)
+add_test(NAME editor_checks COMMAND spectra_uicheck)
 add_test(NAME plugin_checks
          COMMAND spectra_hosttest
                  "$<TARGET_FILE_DIR:SpectraSynth_VST3>/../../../SPECTRA.vst3")

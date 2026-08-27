@@ -142,6 +142,21 @@ public:
 private:
     void timerCallback() override;
     void presetChosen();
+    /** Keeps the undo button's enablement and the roll caption in step with the processor. */
+    void syncRollUi();
+
+    /** Lays the section flow out inside `area`, returning the height it needs. With
+     *  `apply == false` it measures without moving anything. */
+    int flowSections (juce::Rectangle<int> area, bool apply);
+
+public:
+    /** The height this editor needs at a given width, header and margins included. Public so
+     *  the UI check can sweep it across the resizable width range. */
+    int requiredHeightFor (int width);
+
+    static constexpr int kHeaderHeight = 58;
+
+private:
 
     SpectraAudioProcessor& processor;
     SpectraLookAndFeel lookAndFeel;
@@ -150,7 +165,19 @@ private:
     juce::Label presetLabel, voicesLabel;
     VoiceLeds voiceLeds;
 
+    // The web version's RANDOM / MUTATE pair, plus an undo the browser build does not have.
+    juce::TextButton randomButton, mutateButton, undoButton;
+    juce::Label diceLabel, rollLabel;
+    juce::TooltipWindow tooltips { this, 600 };
+
     std::unique_ptr<WavetableDisplay> displays[2];
+
+    // The panels live in a scrolling viewport, the way the web version's panel grid scrolls in
+    // the browser. The section flow is a step function of width -- it needs 1081px of height at
+    // 1240 wide but only 831 at 1600 -- so a fixed minimum window height either clips the bottom
+    // row or forces an absurdly tall floor. Scrolling sidesteps both.
+    juce::Viewport panelView;
+    juce::Component panelHolder;
 
     juce::OwnedArray<Knob> knobs;
     juce::OwnedArray<Toggle> toggles;

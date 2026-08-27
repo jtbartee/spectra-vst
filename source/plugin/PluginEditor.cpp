@@ -370,13 +370,40 @@ SpectraAudioProcessorEditor::SpectraAudioProcessorEditor (SpectraAudioProcessor&
     };
     styleTag (presetLabel, "PRESET");
     styleTag (voicesLabel, "VOICES");
+    styleTag (diceLabel, "PATCH");
     addAndMakeVisible (voiceLeds);
+
+    // The dice. A roll writes through the APVTS like any other edit, so the host sees it as
+    // ordinary automation and every knob on the panel follows on its own.
+    auto styleButton = [this] (juce::TextButton& b, const juce::String& text,
+                               const juce::String& tip, juce::Colour c)
+    {
+        b.setButtonText (text);
+        b.setTooltip (tip);
+        b.setColour (juce::TextButton::buttonColourId, SpectraLookAndFeel::panel.brighter (0.22f));
+        b.setColour (juce::TextButton::textColourOffId, c);
+        b.setColour (juce::TextButton::textColourOnId, c);
+        addAndMakeVisible (b);
+    };
+    styleButton (randomButton, "RANDOM", "Roll a whole new patch", LF::accent);
+    styleButton (mutateButton, "MUTATE", "Nudge the current patch without replacing it", LF::accent2);
+    styleButton (undoButton, "UNDO",
+                 "Put the patch back the way it was before the last roll", LF::text);
+
+    randomButton.onClick = [this] { processor.randomizePatch(); syncRollUi(); };
+    mutateButton.onClick = [this] { processor.mutatePatch();    syncRollUi(); };
+    undoButton.onClick   = [this] { processor.undoRandomize();  syncRollUi(); };
+
+    rollLabel.setFont (juce::FontOptions (9.0f));
+    rollLabel.setColour (juce::Label::textColourId, SpectraLookAndFeel::dim);
+    addAndMakeVisible (rollLabel);
+    syncRollUi();
 
     auto makeSection = [this] (const juce::String& title, juce::Colour a, int perRow) -> Section*
     {
         auto* s = new Section (title, a, perRow);
         sections.add (s);
-        addAndMakeVisible (s);
+        panelHolder.addAndMakeVisible (s);
         return s;
     };
     auto addKnob = [this, &apvts] (Section* s, const juce::String& id, const juce::String& name,
@@ -492,8 +519,15 @@ SpectraAudioProcessorEditor::SpectraAudioProcessorEditor (SpectraAudioProcessor&
 
     startTimerHz (20);
 
+    panelView.setViewedComponent (&panelHolder, false);
+    panelView.setScrollBarsShown (true, false);
+    panelView.setScrollBarThickness (10);
+    addAndMakeVisible (panelView);
+
     setResizable (true, true);
-    setResizeLimits (940, 640, 2000, 1500);
+    // Width floor is set by the header: logo, dice cluster, preset and voice columns side by
+    // side. Height is free, because the panels scroll.
+    setResizeLimits (1000, 560, 2400, 1800);
     setSize (1240, 860);
 }
 
@@ -509,9 +543,19 @@ void SpectraAudioProcessorEditor::presetChosen()
     processor.setCurrentProgram (index);
 }
 
+void SpectraAudioProcessorEditor::syncRollUi()
+{
+    undoButton.setEnabled (processor.canUndoRandomize());
+    rollLabel.setText (processor.getLastRollDescription(), juce::dontSendNotification);
+}
+
 void SpectraAudioProcessorEditor::timerCallback()
 {
     voiceLeds.setMask (processor.getVoiceActiveMask());
+
+    // Loading a program clears the snapshot inside the processor, and a second editor may have
+    // rolled; either way the button follows the processor rather than the last click here.
+    syncRollUi();
 
     auto& apvts = processor.getValueTree();
     for (int o = 0; o < 2; ++o)
@@ -528,7 +572,7 @@ void SpectraAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (SpectraLookAndFeel::bg);
 
-    auto header = getLocalBounds().removeFromTop (58).toFloat();
+    auto header = getLocalBounds().removeFromTop (kHeaderHeight).toFloat();
     g.setColour (SpectraLookAndFeel::panel);
     g.fillRect (header);
     g.setColour (SpectraLookAndFeel::accent.withAlpha (0.5f));
@@ -546,7 +590,7 @@ void SpectraAudioProcessorEditor::paint (juce::Graphics& g)
 void SpectraAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
-    auto header = area.removeFromTop (58);
+    auto header = area.removeFromTop (kHeaderHeight);
 
     auto right = header.removeFromRight (460).reduced (8, 12);
     auto voiceCol = right.removeFromRight (150);
@@ -558,9 +602,31 @@ void SpectraAudioProcessorEditor::resized()
     presetLabel.setBounds (presetCol.removeFromTop (12));
     presetBox.setBounds (presetCol.removeFromTop (24));
 
-    area.reduce (10, 8);
+    // 58px of header: 10 for the tag, 24 for the buttons, 12 for the roll caption.
+    auto dice = header.removeFromRight (250).reduced (4, 6);
+    diceLabel.setBounds (dice.removeFromTop (10));
+    auto diceRow = dice.removeFromTop (24);
+    randomButton.setBounds (diceRow.removeFromLeft (84));
+    diceRow.removeFromLeft (5);
+    mutateButton.setBounds (diceRow.removeFromLeft (80));
+    diceRow.removeFromLeft (5);
+    undoButton.setBounds (diceRow.removeFromLeft (66));
+    rollLabel.setBounds (dice.removeFromTop (12));
 
-    // Flow the sections left to right, wrapping when the next one will not fit.
+    // The holder is as tall as the panels need; the viewport scrolls it.
+    panelView.setBounds (area);
+    const int contentW = juce::jmax (200, area.getWidth() - panelView.getScrollBarThickness());
+    auto inner = juce::Rectangle<int> (0, 0, contentW, 20000).reduced (10, 8);
+    const int contentH = flowSections (inner, true);
+    panelHolder.setSize (contentW, contentH + 16);
+}
+
+/** Flows the sections left to right, wrapping when the next one will not fit, and returns the
+ *  total height they occupy. Running it without applying is how the constructor asks "how tall
+ *  does this editor actually need to be at width W" -- the layout is a step function of width,
+ *  so the honest minimum has to be measured rather than guessed. */
+int SpectraAudioProcessorEditor::flowSections (juce::Rectangle<int> area, bool apply)
+{
     int x = area.getX(), y = area.getY(), rowHeight = 0;
     for (auto* s : sections)
     {
@@ -571,8 +637,16 @@ void SpectraAudioProcessorEditor::resized()
             y += rowHeight + 8;
             rowHeight = 0;
         }
-        s->setBounds (x, y, w, h);
+        if (apply) s->setBounds (x, y, w, h);
         x += w + 8;
         rowHeight = juce::jmax (rowHeight, h);
     }
+    return (y + rowHeight) - area.getY();
+}
+
+int SpectraAudioProcessorEditor::requiredHeightFor (int width)
+{
+    const int contentW = juce::jmax (200, width - panelView.getScrollBarThickness());
+    auto inner = juce::Rectangle<int> (0, 0, contentW, 20000).reduced (10, 8);
+    return kHeaderHeight + flowSections (inner, false) + 16;
 }
